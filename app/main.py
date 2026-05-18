@@ -1,186 +1,240 @@
+import os
+import re
+import uuid
 import tempfile
-# imports logic
-# Add to imports at top of main.py
-from app.experience import extract_experience_from_resume, extract_experience_from_jd, assign_experience_score, calculate_final_score
-from app.skillExtraction import extract_skills_jobbert, encode_long_text
-from app.parser import get_parser 
+import traceback
+import warnings
 
+warnings.filterwarnings("ignore")
+
+from pathlib import Path
 from typing import Optional
+
+import httpx
+import numpy as np
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from fastapi import FastAPI, HTTPException, status, UploadFile, File, Form, Body
-import uuid
-import re
-import httpx
-
-# chromadb deps
-from sklearn.metrics.pairwise import cosine_similarity
-
-# Reader and path dep
 from pypdf import PdfReader
 from docx import Document
 from bs4 import BeautifulSoup
-from pathlib import Path
+from sklearn.metrics.pairwise import cosine_similarity
 
+from app.experience import (
+    extract_experience_from_resume,
+    extract_experience_from_jd,
+    assign_experience_score,
+    calculate_final_score,
+)
+from app.skillExtraction import extract_skills_jobbert, encode_long_text
+from app.parser import get_parser
 
+# ---------------------------------------------------------------------------
+# App setup
+# ---------------------------------------------------------------------------
 
-
-# variables
 app = FastAPI()
-folder = "user_uploads"
+UPLOAD_FOLDER = "user_uploads"
 
 
 class JDRequest(BaseModel):
     jd_text: str
 
-# uploading files setup    
+
+# ---------------------------------------------------------------------------
+# PDF text cleaning
+# ---------------------------------------------------------------------------
+
+def fix_spaced_pdf_text(text: str) -> str:
+    """
+    Some PDFs extract as 'T e c h n i c a l  L e a d' with spaces between
+    every character.  Detect this pattern and collapse it.
+    """
+    # If 4+ single-char tokens appear in a row, it's the spaced-char pattern
+    if re.search(r"(?<!\w)(\w ){4,}", text):
+        # Collapse   "T e c h n i c a l"  →  "Technical"
+        text = re.sub(r"(?<=\b)(\w) (?=\w\b)", r"\1", text)
+        # Remove any remaining double spaces
+        text = re.sub(r" {2,}", " ", text)
+    return text.strip()
+
+
+# ---------------------------------------------------------------------------
+# Safe cosine similarity (handles zero/empty vectors gracefully)
+# ---------------------------------------------------------------------------
+
+def safe_cosine(vec_a: np.ndarray, vec_b: np.ndarray) -> float:
+    if vec_a is None or vec_b is None:
+        return 0.0
+    if np.linalg.norm(vec_a) == 0 or np.linalg.norm(vec_b) == 0:
+        return 0.0
+    try:
+        return float(cosine_similarity([vec_a], [vec_b])[0][0])
+    except Exception:
+        return 0.0
+
+
+# ---------------------------------------------------------------------------
+# Main upload endpoint
+# ---------------------------------------------------------------------------
+
 @app.post("/upload", status_code=status.HTTP_200_OK)
 async def upload_file(file: UploadFile = File(...), jd_text: str = Form(...)):
-    
     filename = f"{uuid.uuid4()}_{file.filename}"
-    file_path = Path(folder)/filename
+    file_path = Path(UPLOAD_FOLDER) / filename
     file_path.parent.mkdir(parents=True, exist_ok=True)
-    parser = get_parser()
+
+    temp_path: Optional[str] = None
+
     try:
+        parser = get_parser()
         parsed_text = ""
-        text_content = ""
         resume_soft_skills = ""
         jd_soft_skills = ""
         resume_hard_skills = ""
         jd_hard_skills = ""
-        experience_score = ""
-        candidate_data = {}
-        
+        experience_score: float = 75.0  # sensible default
+        jd_experience_required: Optional[float] = None
+        candidate_data: dict = {}
+
+        # ── Save uploaded file to disk ──────────────────────────────────────
         with open(file_path, "wb") as buffer:
-            while chunk := await file.read(1024*1024):
+            while chunk := await file.read(1024 * 1024):
                 buffer.write(chunk)
-                
-                if file.content_type.startswith("text"):
-                    text_content += chunk.decode("utf-8") 
 
-        if file.content_type == "application/pdf":
-            # PDF parser
-            print("Type is pdf")
+        content_type = file.content_type or ""
+
+        # ── PDF ─────────────────────────────────────────────────────────────
+        if content_type == "application/pdf":
+            print("[INFO] Parsing PDF")
+
+            # Extract raw text via pypdf
             reader = PdfReader(file_path)
-            candidate_information = parser.read_file(file_path)
-
-            print("Candiatie ifno", candidate_information)
-            with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
-                f.write(jd_text)
-                temp_path = f.name
-
-            jd_information = parser.read_file(temp_path)
-            
-            for key, value in candidate_information.items():
-                if key in ["name", "email", "mobile_number", "skills", "degree", "no_of_pages", "total_exp"]:
-                    candidate_data[key] = value
-                
-                if key == "skills":
-                    skills = candidate_information[key] or []
-                    resume_hard_skills = " ".join(skills).lower()  # ← .lower() added
-
-            for key, value in jd_information.items():
-                if key == "skills":
-                    skills = jd_information[key] or []
-                    jd_hard_skills = " ".join(skills).lower()  # ← .lower() added
-
-            
             for page in reader.pages:
                 parsed_text += page.extract_text() or ""
-            
-            resume_soft_skills = extract_skills_jobbert(parsed_text)
-            job_skills_data = extract_skills_jobbert(jd_text)
-            
-            if resume_soft_skills:
-                resume_soft_skills = " ".join(resume_soft_skills)
-            else:
-                resume_soft_skills = ""
-                
-            if job_skills_data:
-                jd_soft_skills = " ".join(job_skills_data)
-            else:   
-                jd_soft_skills = ""
-            
-                
-            
+
+            # FIX: collapse character-level spacing that some PDFs produce
+            parsed_text = fix_spaced_pdf_text(parsed_text)
+
+            # Resume-parser for structured fields (name, email, skills, …)
+            try:
+                candidate_information = parser.read_file(str(file_path))
+                for key, value in candidate_information.items():
+                    if key in ["name", "email", "mobile_number", "degree", "no_of_pages", "total_exp"]:
+                        candidate_data[key] = value
+                    if key == "skills":
+                        skills = value or []
+                        resume_hard_skills = " ".join(skills).lower()
+            except Exception as e:
+                print(f"[WARN] resume-parser failed: {e}")
+
+            # JD structured fields via resume-parser (temp file trick)
+            try:
+                with tempfile.NamedTemporaryFile(
+                    mode="w", suffix=".txt", delete=False, encoding="utf-8"
+                ) as f:
+                    f.write(jd_text)
+                    temp_path = f.name
+
+                jd_information = parser.read_file(temp_path)
+                for key, value in jd_information.items():
+                    if key == "skills":
+                        skills = value or []
+                        jd_hard_skills = " ".join(skills).lower()
+            except Exception as e:
+                print(f"[WARN] JD resume-parser failed: {e}")
+
+            # Soft-skill extraction via JobBERT
+            resume_soft_list = extract_skills_jobbert(parsed_text)
+            jd_soft_list = extract_skills_jobbert(jd_text)
+            resume_soft_skills = " ".join(resume_soft_list) if resume_soft_list else ""
+            jd_soft_skills = " ".join(jd_soft_list) if jd_soft_list else ""
+
+            # Experience scoring
             resume_experience = extract_experience_from_resume(parsed_text)
             jd_experience_required = extract_experience_from_jd(jd_text)
-            
             experience_score = assign_experience_score(resume_experience, jd_experience_required)
-                        
-        elif file.content_type.startswith("text"):
-            # text parser
-            print("Type is text")
+
+            print(f"[INFO] resume_exp={resume_experience}  jd_exp={jd_experience_required}  exp_score={experience_score}")
+
+        # ── Plain text ───────────────────────────────────────────────────────
+        elif content_type.startswith("text/plain"):
+            print("[INFO] Parsing plain text")
             with open(file_path, "r", encoding="utf-8") as f:
                 parsed_text = f.read()
-                
-                
-        elif file.content_type == "text/html":
-            # html parser
-            print("Type is HTML")
+
+        # ── HTML ─────────────────────────────────────────────────────────────
+        elif content_type == "text/html":
+            print("[INFO] Parsing HTML")
             with open(file_path, "r", encoding="utf-8") as f:
                 html_content = f.read()
-                
             soup = BeautifulSoup(html_content, "html.parser")
             parsed_text = soup.get_text()
 
-
-        elif file.content_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-            # DOCX parser
-            print("Type is docx")
+        # ── DOCX ─────────────────────────────────────────────────────────────
+        elif content_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+            print("[INFO] Parsing DOCX")
             doc = Document(file_path)
-            text = []
-            
-            for para in doc.paragraphs:
-                text.append(para.text)
-                
-            parsed_text = "\n".join(text)
-        
-        
-        # parsed_text = re.sub(r"[^a-zA-Z0-9\s]", "", parsed_text)
+            parsed_text = "\n".join(para.text for para in doc.paragraphs)
+
+        else:
+            raise HTTPException(status_code=415, detail=f"Unsupported file type: {content_type}")
+
+        # ── Normalise whitespace ─────────────────────────────────────────────
         parsed_text = re.sub(r"\s+", " ", parsed_text).strip()
-                
-        
-        resume_vec = encode_long_text(parsed_text)
-        jd_vec = encode_long_text(jd_text)
-        
-        print("Soft skills", resume_soft_skills)
-        resume_skills_vec = encode_long_text(resume_soft_skills)
-        job_skills_vec = encode_long_text(jd_soft_skills)
-        
-        
-        resume_hard_skills_vec = encode_long_text(resume_hard_skills)
-        jd_hard_skills_vec = encode_long_text(jd_hard_skills)
-        
-        try:
-            res_jd_semantic_score = cosine_similarity([resume_vec], [jd_vec])[0][0]
-        except ValueError:
-            res_jd_semantic_score = 0.0
 
-        try:
-            skills_semantic_score = cosine_similarity([resume_skills_vec], [job_skills_vec])[0][0]
-        except ValueError:
-            skills_semantic_score = 0.0
+        # ── Encode all text fields ────────────────────────────────────────────
+        resume_vec           = encode_long_text(parsed_text)
+        jd_vec               = encode_long_text(jd_text)
+        resume_soft_vec      = encode_long_text(resume_soft_skills)
+        jd_soft_vec          = encode_long_text(jd_soft_skills)
+        resume_hard_vec      = encode_long_text(resume_hard_skills)
+        jd_hard_vec          = encode_long_text(jd_hard_skills)
 
-        try:
-            hard_skill_semantic_score = cosine_similarity([resume_hard_skills_vec], [jd_hard_skills_vec])[0][0]
-        except ValueError:
-            hard_skill_semantic_score = 0.0
+        # ── Cosine similarities (0–100) ───────────────────────────────────────
+        cosine_score          = safe_cosine(resume_vec,      jd_vec)       * 100
+        skills_score          = safe_cosine(resume_soft_vec, jd_soft_vec)  * 100
+        hard_skill_score      = safe_cosine(resume_hard_vec, jd_hard_vec)  * 100
 
-        cosine_score = float(res_jd_semantic_score) * 100
-        skills_score = float(skills_semantic_score) * 100
-        hard_skill_cosine_score = float(hard_skill_semantic_score) * 100
-        
-        
-        final_score = calculate_final_score(skills_score, cosine_score, hard_skill_cosine_score, experience_score, jd_experience_required)
-        
-        return {"filename":filename, "file_desc": parsed_text[:100], "job_desc": jd_text[:10], "cosine_score": int(float(res_jd_semantic_score*100)), "skills_cosine_score": int(float(skills_semantic_score*100)), "hard_skills_score": int(float(hard_skill_semantic_score*100)), "experience_score": experience_score, "evaulatin_result": final_score}
+        print(f"[INFO] cosine={cosine_score:.1f}  soft={skills_score:.1f}  hard={hard_skill_score:.1f}")
 
+        # ── FIX: correct argument order ───────────────────────────────────────
+        # calculate_final_score(semantic, soft_skills, hard_skills, experience, jd_exp)
+        final_score = calculate_final_score(
+            semantic_score    = cosine_score,
+            soft_skills_score = skills_score,
+            hard_skills_score = hard_skill_score,
+            experience_score  = experience_score,
+            jd_exp            = jd_experience_required,
+        )
+
+        return {
+            "filename":         filename,
+            "file_desc":        parsed_text[:200],
+            "job_desc":         jd_text[:50],
+            "cosine_score":     round(cosine_score),
+            "skills_cosine_score": round(skills_score),
+            "hard_skills_score":   round(hard_skill_score),
+            "experience_score":    experience_score,
+            "candidate_data":      candidate_data,
+            "evaluation_result":   final_score,
+        }
+
+    except HTTPException:
+        raise
     except Exception as e:
-          import traceback
-          traceback.print_exc()  # full stack trace in terminal
-          raise HTTPException(status_code=500, detail=str(e))
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
+    finally:
+        # Always clean up the temp JD file
+        if temp_path and os.path.exists(temp_path):
+            os.unlink(temp_path)
+
+
+# ---------------------------------------------------------------------------
+# Score normalisation utility (kept for reference)
+# ---------------------------------------------------------------------------
 
 def normalize_score(score: float, min_val: float = 0.3, max_val: float = 0.85) -> float:
     normalized = (score - min_val) / (max_val - min_val)
