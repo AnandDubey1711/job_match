@@ -1,12 +1,7 @@
-import { API_ENDPOINTS } from './api';
-
+import { API_ENDPOINTS, API_BASE_URL, MAX_FILE_SIZE_BYTES, MAX_FILE_SIZE_MB, MIN_JD_LENGTH, MAX_JD_LENGTH } from '../config';
 
 const ALLOWED_MIME_TYPES = ['application/pdf'];
 const ALLOWED_EXTENSIONS = ['.pdf'];
-const MAX_FILE_SIZE_MB = 10;
-const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
-const MIN_JD_LENGTH = 50;
-const MAX_JD_LENGTH = 5000;
 
 export function validateResumeFile(file) {
     if (!file) {
@@ -71,7 +66,7 @@ export async function analyzeResumeMatch(file, jobDescription) {
         });
     } catch (networkError) {
         const err = new Error(
-            'Cannot reach the server. Make sure the backend is running on localhost:8000.'
+            `Cannot reach the server. Make sure the backend is running at ${API_BASE_URL}.`
         );
         err.isNetworkError = true;
         throw err;

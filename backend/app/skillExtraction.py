@@ -21,13 +21,15 @@ from sklearn.metrics.pairwise import cosine_similarity
 from transformers import pipeline
 from sentence_transformers import SentenceTransformer
 
+from app import config
+
 # ---------------------------------------------------------------------------
 # Model loading — happens once at import time
 # ---------------------------------------------------------------------------
-print("Loading SentenceTransformer model...")
-model = SentenceTransformer("all-MiniLM-L6-v2")
+print(f"Loading SentenceTransformer model ({config.SENTENCE_TRANSFORMER_MODEL})...")
+model = SentenceTransformer(config.SENTENCE_TRANSFORMER_MODEL)
 
-EMBEDDING_DIM = 384  # all-MiniLM-L6-v2 output dimension
+EMBEDDING_DIM = model.get_sentence_embedding_dimension()
 
 # Lazy-loaded to save memory until first use
 _skill_extractor = None
@@ -36,10 +38,10 @@ _skill_extractor = None
 def get_skill_extractor():
     global _skill_extractor
     if _skill_extractor is None:
-        print("Loading JobBERT skill extractor...")
+        print(f"Loading JobBERT skill extractor ({config.JOBBERT_MODEL})...")
         _skill_extractor = pipeline(
             "token-classification",
-            model="jjzha/jobbert_skill_extraction",
+            model=config.JOBBERT_MODEL,
             aggregation_strategy="simple",
         )
     return _skill_extractor
