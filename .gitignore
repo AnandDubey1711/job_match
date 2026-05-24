@@ -1,42 +1,30 @@
-# Python
+# Python virtual environments
+venv/
+.venv/
+env/
+
+# Python cache / build artifacts
 __pycache__/
 *.py[cod]
 *.pyo
 *.pyd
-.Python
 *.egg-info/
-dist/
 build/
+dist/
 
-# Virtual environment
-.venv/
-venv/
-env/
+# Frontend dependencies / build artifacts
+frontend/node_modules/
+frontend/dist/
 
-# Environment variables
+# Local uploads and generated user files
+user_uploads/
+
+# Local environment files
 .env
 .env.*
 
-# Uvicorn / app
-*.log
-parser.cache
-
-# Temp files
-*.tmp
-temp/
-tmp/
-
-# IDE
-.vscode/
-.idea/
-*.swp
-
-# OS
+# Editor / OS noise
 .DS_Store
 Thumbs.db
-
-# Uploads / user data
-uploads/
-*.pdf
-*.docx
-*.txt
+.idea/
+.vscode/
