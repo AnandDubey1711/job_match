@@ -18,6 +18,139 @@ import {
 import { useNavigate } from "react-router-dom";
 import { analyzeResumeMatch } from "../routes/uploadRoute";
 
+const VISIBLE_KEYWORDS = 14;
+
+const GENERIC_BLOCKLIST = new Set([
+  "one",
+  "two",
+  "plus",
+  "load",
+  "ideal",
+  "salary",
+  "health",
+  "team",
+  "work",
+  "year",
+  "years",
+  "role",
+  "job",
+  "remote",
+  "benefits",
+  "company",
+  "experience",
+  "requirements",
+  "qualifications",
+  "description",
+  "position",
+  "candidate",
+]);
+
+const cleanKeyword = (raw) => {
+  if (!raw) return null;
+  let s = String(raw)
+    .trim()
+    .replace(/[\*#|,;.:]+$/g, "")
+    .replace(/\s+/g, " ")
+    .replace(/\s*-\s*/g, " ");
+  if (s.length < 2 || s.length > 42) return null;
+  if (s.split(" ").length > 5) return null;
+  const tokens = s.toLowerCase().split(" ");
+  if (tokens.some((t) => GENERIC_BLOCKLIST.has(t))) return null;
+  if (
+    /^(design|develop|build|work|collaborate|implement|create|manage)\b/i.test(
+      s,
+    ) &&
+    s.split(" ").length > 3
+  ) {
+    return null;
+  }
+  return s;
+};
+
+const prepareKeywords = (list) => {
+  const seen = new Set();
+  return list
+    .map(cleanKeyword)
+    .filter(Boolean)
+    .filter((kw) => {
+      const key = kw.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .sort((a, b) => a.length - b.length);
+};
+
+const KeywordPill = ({ label, variant = "matched" }) => {
+  const isMatched = variant === "matched";
+  const display = label.length > 28 ? `${label.slice(0, 26)}…` : label;
+
+  return (
+    <span
+      title={label}
+      className={`inline-flex max-w-full items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-semibold leading-snug ${
+        isMatched
+          ? "bg-emerald-50 text-emerald-800 ring-1 ring-emerald-100"
+          : "bg-rose-50 text-rose-700 ring-1 ring-rose-100"
+      }`}
+    >
+      {isMatched ? (
+        <Check size={12} strokeWidth={3} className="shrink-0" />
+      ) : (
+        <XIcon size={12} strokeWidth={3} className="shrink-0" />
+      )}
+      <span className="truncate">{display}</span>
+    </span>
+  );
+};
+
+const KeywordPanel = ({ title, subtitle, items, variant, emptyText }) => {
+  const [expanded, setExpanded] = useState(false);
+  const visible = expanded ? items : items.slice(0, VISIBLE_KEYWORDS);
+  const hiddenCount = Math.max(0, items.length - VISIBLE_KEYWORDS);
+
+  return (
+    <section className="flex min-h-0 flex-col rounded-2xl border border-gray-100 bg-gray-50/60 p-5">
+      <div className="mb-4 flex items-start justify-between gap-3">
+        <div>
+          <h4 className="text-sm font-bold text-gray-900">{title}</h4>
+          <p className="mt-0.5 text-xs font-medium text-gray-500">{subtitle}</p>
+        </div>
+        <span
+          className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-bold ${
+            variant === "matched"
+              ? "bg-emerald-100 text-emerald-800"
+              : "bg-rose-100 text-rose-700"
+          }`}
+        >
+          {items.length}
+        </span>
+      </div>
+
+      {items.length === 0 ? (
+        <p className="text-sm font-medium text-gray-400">{emptyText}</p>
+      ) : (
+        <>
+          <div className="grid max-h-[280px] grid-cols-1 gap-2 overflow-y-auto pr-1 sm:grid-cols-2">
+            {visible.map((kw) => (
+              <KeywordPill key={kw} label={kw} variant={variant} />
+            ))}
+          </div>
+          {hiddenCount > 0 && (
+            <button
+              type="button"
+              onClick={() => setExpanded((v) => !v)}
+              className="mt-4 text-left text-xs font-bold text-[#0BAF8A] hover:underline"
+            >
+              {expanded ? "Show fewer" : `Show ${hiddenCount} more`}
+            </button>
+          )}
+        </>
+      )}
+    </section>
+  );
+};
+
 const ScoreChecker = () => {
   const navigate = useNavigate();
   const [file, setFile] = useState(null);
@@ -53,15 +186,32 @@ const ScoreChecker = () => {
       const data = await analyzeResumeMatch(file, jobDescription);
       // Normalise backend response —— support both snake_case and camelCase keys
       const overall =
-        data?.overall_score ?? data?.overallScore ?? data?.score ?? 0;
-      const matched =
-        data?.matched_keywords ?? data?.matchedKeywords ?? data?.matched ?? [];
-      const missing =
-        data?.missing_keywords ?? data?.missingKeywords ?? data?.missing ?? [];
+        data?.overall_score ??
+        data?.overallScore ??
+        data?.score ??
+        data?.evaluation_result?.final_score ??
+        0;
+      const matched = prepareKeywords(
+        data?.matched_keywords ?? data?.matchedKeywords ?? data?.matched ?? [],
+      );
+      const missing = prepareKeywords(
+        data?.missing_keywords ?? data?.missingKeywords ?? data?.missing ?? [],
+      );
       const tip = data?.ai_tip ?? data?.aiTip ?? data?.recommendation ?? null;
+      const totalKeywords = matched.length + missing.length;
+      const coverage =
+        totalKeywords > 0
+          ? Math.round((matched.length / totalKeywords) * 100)
+          : 0;
 
       setAnimScore(0);
-      setResults({ overall, matched, missing, tip });
+      setResults({
+        overall: Math.round(Number(overall) || 0),
+        matched,
+        missing,
+        tip,
+        coverage,
+      });
     } catch (err) {
       const type = err.isValidationError
         ? "validation"
@@ -296,21 +446,24 @@ const ScoreChecker = () => {
           </div>
         ) : (
           /* Results Matches Section */
-          <div className="w-full max-w-4xl mx-auto pt-6 flex flex-col animate-in fade-in duration-[800ms] fill-mode-forwards ease-out">
-            <h2 className="text-3xl font-extrabold text-center tracking-tight mb-10 text-gray-900">
-              Analysis Complete
-            </h2>
+          <div className="w-full max-w-5xl mx-auto flex flex-col gap-6 pt-4 animate-in fade-in duration-[800ms] fill-mode-forwards ease-out">
+            <div className="text-center">
+              <p className="text-xs font-bold uppercase tracking-[0.2em] text-[#0BAF8A]">
+                Analysis complete
+              </p>
+              <h2 className="mt-2 text-3xl font-extrabold tracking-tight text-gray-900 sm:text-4xl">
+                Your match breakdown
+              </h2>
+            </div>
 
-            {/* Top Results Card */}
-            <div className="bg-white rounded-[24px] w-full shadow-xl shadow-gray-200/50 p-8 md:p-12 border border-gray-100 flex flex-col md:flex-row items-center md:items-start gap-12">
-              {/* Circular Score Ring */}
-              <div className="flex flex-col items-center shrink-0">
-                <div className="relative w-40 h-40 flex items-center justify-center mb-4">
+            {/* Score hero */}
+            <div className="grid gap-4 rounded-[24px] border border-gray-100 bg-white p-6 shadow-xl shadow-gray-200/40 md:grid-cols-[220px_1fr] md:p-8">
+              <div className="flex flex-col items-center justify-center border-b border-gray-100 pb-6 md:border-b-0 md:border-r md:pb-0 md:pr-8">
+                <div className="relative mb-4 flex h-36 w-36 items-center justify-center">
                   <svg
-                    className="w-full h-full transform -rotate-90 pointer-events-none"
+                    className="pointer-events-none h-full w-full -rotate-90 transform"
                     viewBox="0 0 100 100"
                   >
-                    {/* Track */}
                     <circle
                       cx="50"
                       cy="50"
@@ -319,7 +472,6 @@ const ScoreChecker = () => {
                       stroke="#F3F4F6"
                       strokeWidth="8"
                     />
-                    {/* Progress */}
                     <circle
                       cx="50"
                       cy="50"
@@ -333,82 +485,108 @@ const ScoreChecker = () => {
                       className="transition-all duration-1000 ease-[cubic-bezier(0.22,1,0.36,1)]"
                     />
                   </svg>
-                  <div className="absolute flex flex-col items-center justify-center text-gray-900">
-                    <span className="font-extrabold text-5xl tracking-tighter leading-none relative left-1">
-                      {animScore}
+                  <div className="absolute flex flex-col items-center text-gray-900">
+                    <span className="text-5xl font-extrabold leading-none tracking-tighter">
+                      {Math.round(animScore)}
                       <span className="text-2xl">%</span>
+                    </span>
+                    <span className="mt-1 text-xs font-semibold uppercase tracking-wide text-gray-400">
+                      Match score
                     </span>
                   </div>
                 </div>
-                <div
-                  className="px-4 py-1.5 rounded-full font-bold text-sm tracking-wide bg-gray-50"
-                  style={{ color: matchData.color }}
+                <span
+                  className="rounded-full px-4 py-1.5 text-sm font-bold"
+                  style={{
+                    color: matchData.color,
+                    backgroundColor: `${matchData.color}14`,
+                  }}
                 >
                   {matchData.text}
-                </div>
+                </span>
               </div>
 
-              {/* Keyword Pills */}
-              <div className="flex-1 w-full grid md:grid-cols-2 gap-8">
-                {/* Matched */}
-                <div>
-                  <h4 className="font-bold text-gray-600 uppercase tracking-wide text-xs mb-4">
-                    Matched Keywords
-                  </h4>
-                  <div className="flex flex-wrap gap-2">
-                    {results.matched.map((kw, idx) => (
-                      <div
-                        key={idx}
-                        className="bg-teal-50 border border-teal-100 text-[#0BAF8A] px-3 py-1.5 rounded-full text-[13px] font-semibold flex items-center gap-1.5"
-                      >
-                        <Check size={14} strokeWidth={3} /> {kw}
-                      </div>
-                    ))}
-                  </div>
+              <div className="grid gap-3 sm:grid-cols-3">
+                <div className="rounded-2xl bg-[#F7F9FC] px-4 py-4">
+                  <p className="text-xs font-bold uppercase tracking-wide text-gray-400">
+                    Matched
+                  </p>
+                  <p className="mt-1 text-2xl font-extrabold text-emerald-700">
+                    {results.matched.length}
+                  </p>
+                  <p className="text-xs font-medium text-gray-500">
+                    keywords found on resume
+                  </p>
                 </div>
-
-                {/* Missing */}
-                <div>
-                  <h4 className="font-bold text-gray-600 uppercase tracking-wide text-xs mb-4">
-                    Missing Keywords
-                  </h4>
-                  <div className="flex flex-wrap gap-2">
-                    {results.missing.map((kw, idx) => (
-                      <div
-                        key={idx}
-                        className="bg-red-50 border border-red-100 text-red-500 px-3 py-1.5 rounded-full text-[13px] font-semibold flex items-center gap-1.5"
-                      >
-                        <XIcon size={14} strokeWidth={3} /> {kw}
-                      </div>
-                    ))}
-                  </div>
+                <div className="rounded-2xl bg-[#F7F9FC] px-4 py-4">
+                  <p className="text-xs font-bold uppercase tracking-wide text-gray-400">
+                    Missing
+                  </p>
+                  <p className="mt-1 text-2xl font-extrabold text-rose-600">
+                    {results.missing.length}
+                  </p>
+                  <p className="text-xs font-medium text-gray-500">
+                    gaps vs job description
+                  </p>
+                </div>
+                <div className="rounded-2xl bg-[#F7F9FC] px-4 py-4">
+                  <p className="text-xs font-bold uppercase tracking-wide text-gray-400">
+                    Coverage
+                  </p>
+                  <p className="mt-1 text-2xl font-extrabold text-gray-900">
+                    {results.coverage}%
+                  </p>
+                  <p className="text-xs font-medium text-gray-500">
+                    of detected JD keywords
+                  </p>
                 </div>
               </div>
             </div>
 
-            {/* AI Tip Card — shows backend tip or a default */}
-            <div className="mt-8 bg-white border border-gray-100 border-l-4 border-l-[#0BAF8A] rounded-2xl p-6 shadow-md shadow-gray-200/40 flex items-start gap-4">
-              <div className="w-10 h-10 rounded-full bg-teal-50 flex items-center justify-center shrink-0">
+            {/* Keyword panels */}
+            <div className="grid gap-4 md:grid-cols-2">
+              <KeywordPanel
+                title="Matched keywords"
+                subtitle="Terms from the job description already reflected on your resume"
+                items={results.matched}
+                variant="matched"
+                emptyText="No clear keyword overlap detected yet."
+              />
+              <KeywordPanel
+                title="Missing keywords"
+                subtitle="High-value terms to add where you have genuine experience"
+                items={results.missing}
+                variant="missing"
+                emptyText="Great — no major keyword gaps detected."
+              />
+            </div>
+
+            {/* AI Tip Card */}
+            <div className="flex items-start gap-4 rounded-2xl border border-gray-100 bg-gradient-to-br from-white to-[#F7F9FC] p-6 shadow-md shadow-gray-200/30">
+              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-teal-50">
                 <Lightbulb size={20} className="text-[#0BAF8A]" />
               </div>
-              <div>
-                <h4 className="font-bold text-gray-900 mb-1">
-                  AI Recommendation
-                </h4>
-                <p className="text-sm font-medium text-gray-600 leading-relaxed">
+              <div className="min-w-0">
+                <h4 className="font-bold text-gray-900">AI recommendation</h4>
+                <p className="mt-2 text-sm font-medium leading-relaxed text-gray-600">
                   {results?.tip ||
                     "Focus on adding the missing keywords naturally into your experience bullet points. Tailor your resume language to mirror the exact phrasing in the job description to improve ATS pass rates."}
                 </p>
               </div>
             </div>
 
-            {/* Reset Button */}
-            <div className="mt-12 mb-20 text-center">
+            {/* Reset — prominent CTA after results */}
+            <div className="mb-16 mt-10 flex flex-col items-center gap-3 rounded-2xl border-2 border-dashed border-[#0BAF8A]/50 bg-gradient-to-b from-[#0BAF8A]/10 to-white px-6 py-8 text-center shadow-sm">
+              <p className="text-sm font-semibold text-gray-700">
+                Finished reviewing this match?
+              </p>
               <button
+                type="button"
                 onClick={handleReset}
-                className="inline-flex items-center justify-center gap-2 px-8 py-3 rounded-full text-gray-500 font-bold text-[14px] hover:text-gray-900 hover:bg-gray-100 transition-colors"
+                className="inline-flex items-center justify-center gap-2.5 rounded-full bg-gradient-to-r from-[#0BAF8A] to-[#06D6A0] px-10 py-4 text-[15px] font-bold text-white shadow-lg shadow-teal-300/50 transition-all hover:scale-[1.02] hover:shadow-xl hover:shadow-teal-300/60 focus:outline-none focus-visible:ring-4 focus-visible:ring-[#0BAF8A]/40"
               >
-                <RotateCcw size={16} strokeWidth={2.5} /> Analyze Another Resume
+                <RotateCcw size={18} strokeWidth={2.5} />
+                Analyze Another Resume
               </button>
             </div>
           </div>

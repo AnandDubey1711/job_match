@@ -13,6 +13,7 @@ from typing import Optional
 import httpx
 import numpy as np
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from pypdf import PdfReader
@@ -26,7 +27,14 @@ from app.experience import (
     assign_experience_score,
     calculate_final_score,
 )
-from app.skillExtraction import extract_skills_jobbert, encode_long_text
+from app.skillExtraction import (
+    extract_skills_jobbert,
+    encode_long_text,
+    compare_skill_keywords,
+    build_ai_tip,
+    build_jd_keywords,
+    build_resume_keywords,
+)
 from app.parser import get_parser
 
 # ---------------------------------------------------------------------------
@@ -35,6 +43,17 @@ from app.parser import get_parser
 
 app = FastAPI()
 UPLOAD_FOLDER = "user_uploads"
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 class JDRequest(BaseModel):
@@ -79,7 +98,22 @@ def safe_cosine(vec_a: np.ndarray, vec_b: np.ndarray) -> float:
 # ---------------------------------------------------------------------------
 
 @app.post("/upload", status_code=status.HTTP_200_OK)
-async def upload_file(file: UploadFile = File(...), jd_text: str = Form(...)):
+async def upload_file(
+    file: Optional[UploadFile] = File(None),
+    jd_text: Optional[str] = Form(None),
+    resume: Optional[UploadFile] = File(None),
+    job_description: Optional[str] = Form(None),
+):
+    # Support both the original API contract (`file`, `jd_text`) and the
+    # frontend contract currently in use (`resume`, `job_description`).
+    file = file or resume
+    jd_text = jd_text or job_description
+
+    if file is None:
+        raise HTTPException(status_code=422, detail="Missing uploaded file. Expected 'file' or 'resume'.")
+    if not jd_text:
+        raise HTTPException(status_code=422, detail="Missing job description. Expected 'jd_text' or 'job_description'.")
+
     filename = f"{uuid.uuid4()}_{file.filename}"
     file_path = Path(UPLOAD_FOLDER) / filename
     file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -93,6 +127,10 @@ async def upload_file(file: UploadFile = File(...), jd_text: str = Form(...)):
         jd_soft_skills = ""
         resume_hard_skills = ""
         jd_hard_skills = ""
+        resume_soft_list: list[str] = []
+        jd_soft_list: list[str] = []
+        resume_hard_list: list[str] = []
+        jd_hard_list: list[str] = []
         experience_score: float = 75.0  # sensible default
         jd_experience_required: Optional[float] = None
         candidate_data: dict = {}
@@ -124,7 +162,8 @@ async def upload_file(file: UploadFile = File(...), jd_text: str = Form(...)):
                         candidate_data[key] = value
                     if key == "skills":
                         skills = value or []
-                        resume_hard_skills = " ".join(skills).lower()
+                        resume_hard_list = [str(s) for s in skills if s]
+                        resume_hard_skills = " ".join(resume_hard_list).lower()
             except Exception as e:
                 print(f"[WARN] resume-parser failed: {e}")
 
@@ -140,7 +179,8 @@ async def upload_file(file: UploadFile = File(...), jd_text: str = Form(...)):
                 for key, value in jd_information.items():
                     if key == "skills":
                         skills = value or []
-                        jd_hard_skills = " ".join(skills).lower()
+                        jd_hard_list = [str(s) for s in skills if s]
+                        jd_hard_skills = " ".join(jd_hard_list).lower()
             except Exception as e:
                 print(f"[WARN] JD resume-parser failed: {e}")
 
@@ -183,6 +223,52 @@ async def upload_file(file: UploadFile = File(...), jd_text: str = Form(...)):
         # ── Normalise whitespace ─────────────────────────────────────────────
         parsed_text = re.sub(r"\s+", " ", parsed_text).strip()
 
+        if not resume_soft_list:
+            resume_soft_list = extract_skills_jobbert(parsed_text)
+            jd_soft_list = extract_skills_jobbert(jd_text)
+            resume_soft_skills = " ".join(resume_soft_list) if resume_soft_list else ""
+            jd_soft_skills = " ".join(jd_soft_list) if jd_soft_list else ""
+
+        if content_type != "application/pdf" and parsed_text:
+            resume_experience = extract_experience_from_resume(parsed_text)
+            jd_experience_required = extract_experience_from_jd(jd_text)
+            experience_score = assign_experience_score(
+                resume_experience, jd_experience_required
+            )
+
+        if not resume_hard_list:
+            try:
+                candidate_information = parser.read_file(str(file_path))
+                for key, value in candidate_information.items():
+                    if key in ["name", "email", "mobile_number", "degree", "no_of_pages", "total_exp"]:
+                        candidate_data[key] = value
+                    if key == "skills":
+                        skills = value or []
+                        resume_hard_list = [str(s) for s in skills if s]
+                        resume_hard_skills = " ".join(resume_hard_list).lower()
+            except Exception as e:
+                print(f"[WARN] resume-parser failed: {e}")
+
+        if not jd_hard_list:
+            try:
+                with tempfile.NamedTemporaryFile(
+                    mode="w", suffix=".txt", delete=False, encoding="utf-8"
+                ) as f:
+                    f.write(jd_text)
+                    jd_temp_path = f.name
+
+                jd_information = parser.read_file(jd_temp_path)
+                for key, value in jd_information.items():
+                    if key == "skills":
+                        skills = value or []
+                        jd_hard_list = [str(s) for s in skills if s]
+                        jd_hard_skills = " ".join(jd_hard_list).lower()
+            except Exception as e:
+                print(f"[WARN] JD resume-parser failed: {e}")
+            finally:
+                if "jd_temp_path" in locals() and os.path.exists(jd_temp_path):
+                    os.unlink(jd_temp_path)
+
         # ── Encode all text fields ────────────────────────────────────────────
         resume_vec           = encode_long_text(parsed_text)
         jd_vec               = encode_long_text(jd_text)
@@ -208,6 +294,18 @@ async def upload_file(file: UploadFile = File(...), jd_text: str = Form(...)):
             jd_exp            = jd_experience_required,
         )
 
+        overall_score = round(final_score["final_score"])
+        jd_keywords = build_jd_keywords(jd_text, jd_soft_list)
+        resume_keywords = build_resume_keywords(
+            parsed_text, resume_soft_list, resume_hard_list
+        )
+        matched_keywords, missing_keywords = compare_skill_keywords(
+            jd_keywords,
+            resume_keywords,
+            resume_text=parsed_text,
+        )
+        ai_tip = build_ai_tip(missing_keywords, overall_score)
+
         return {
             "filename":         filename,
             "file_desc":        parsed_text[:200],
@@ -218,6 +316,10 @@ async def upload_file(file: UploadFile = File(...), jd_text: str = Form(...)):
             "experience_score":    experience_score,
             "candidate_data":      candidate_data,
             "evaluation_result":   final_score,
+            "overall_score":       overall_score,
+            "matched_keywords":    matched_keywords,
+            "missing_keywords":    missing_keywords,
+            "ai_tip":              ai_tip,
         }
 
     except HTTPException:
