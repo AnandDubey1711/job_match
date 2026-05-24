@@ -17,6 +17,7 @@ dependencies = [
     "resume-parser>=0.8.4",
     "sentence-transformers>=5.5.0",
     "spacy<3.0",
+    "en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-2.3.1/en_core_web_sm-2.3.1.tar.gz",
     "transformers>=5.8.1",
     "uvicorn>=0.46.0",
 ]

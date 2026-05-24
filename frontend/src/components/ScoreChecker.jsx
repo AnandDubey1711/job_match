@@ -88,11 +88,10 @@ const KeywordPill = ({ label, variant = "matched" }) => {
   return (
     <span
       title={label}
-      className={`inline-flex max-w-full items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-semibold leading-snug ${
-        isMatched
+      className={`inline-flex max-w-full items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-semibold leading-snug ${isMatched
           ? "bg-emerald-50 text-emerald-800 ring-1 ring-emerald-100"
           : "bg-rose-50 text-rose-700 ring-1 ring-rose-100"
-      }`}
+        }`}
     >
       {isMatched ? (
         <Check size={12} strokeWidth={3} className="shrink-0" />
@@ -117,11 +116,10 @@ const KeywordPanel = ({ title, subtitle, items, variant, emptyText }) => {
           <p className="mt-0.5 text-xs font-medium text-gray-500">{subtitle}</p>
         </div>
         <span
-          className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-bold ${
-            variant === "matched"
+          className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-bold ${variant === "matched"
               ? "bg-emerald-100 text-emerald-800"
               : "bg-rose-100 text-rose-700"
-          }`}
+            }`}
         >
           {items.length}
         </span>
@@ -302,12 +300,11 @@ const ScoreChecker = () => {
             {error && (
               <div
                 className={`w-full flex items-start gap-3 rounded-2xl border px-5 py-4 mb-6 text-sm font-medium leading-snug
-                  ${
-                    error.type === "validation"
-                      ? "bg-amber-50 border-amber-200 text-amber-800"
-                      : error.type === "network"
-                        ? "bg-blue-50 border-blue-200 text-blue-800"
-                        : "bg-red-50 border-red-200 text-red-800"
+                  ${error.type === "validation"
+                    ? "bg-amber-50 border-amber-200 text-amber-800"
+                    : error.type === "network"
+                      ? "bg-blue-50 border-blue-200 text-blue-800"
+                      : "bg-red-50 border-red-200 text-red-800"
                   }`}
               >
                 <span className="mt-0.5 shrink-0">
@@ -415,10 +412,9 @@ const ScoreChecker = () => {
                 onClick={handleAnalyze}
                 disabled={isAnalyzing}
                 className={`flex items-center justify-center min-w-[220px] h-[52px] rounded-full font-bold text-[15px] transition-all
-                  ${
-                    isFormValid
-                      ? "bg-gradient-to-r from-[#0BAF8A] to-[#06D6A0] text-white shadow-lg shadow-teal-200 hover:shadow-teal-300 hover:scale-[1.02]"
-                      : "bg-gray-200 text-gray-400 cursor-not-allowed"
+                  ${isFormValid
+                    ? "bg-gradient-to-r from-[#0BAF8A] to-[#06D6A0] text-white shadow-lg shadow-teal-200 hover:shadow-teal-300 hover:scale-[1.02]"
+                    : "bg-gray-200 text-gray-400 cursor-not-allowed"
                   }`}
               >
                 {isAnalyzing ? (

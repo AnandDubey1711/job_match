@@ -1,14 +1,15 @@
 import os
 import re
-import uuid
 import tempfile
 import traceback
+import uuid
 import warnings
-
-warnings.filterwarnings("ignore")
-
 from pathlib import Path
 from typing import Optional
+
+from app import config
+
+warnings.filterwarnings("ignore")
 
 import httpx
 import numpy as np
@@ -42,14 +43,12 @@ from app.parser import get_parser
 # ---------------------------------------------------------------------------
 
 app = FastAPI()
-UPLOAD_FOLDER = "user_uploads"
+UPLOAD_FOLDER = config.UPLOAD_FOLDER
+UPLOAD_CHUNK_SIZE = config.UPLOAD_CHUNK_SIZE_MB * 1024 * 1024
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-    ],
+    allow_origins=config.CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -131,13 +130,13 @@ async def upload_file(
         jd_soft_list: list[str] = []
         resume_hard_list: list[str] = []
         jd_hard_list: list[str] = []
-        experience_score: float = 75.0  # sensible default
+        experience_score: float = config.DEFAULT_EXPERIENCE_SCORE
         jd_experience_required: Optional[float] = None
         candidate_data: dict = {}
 
         # ── Save uploaded file to disk ──────────────────────────────────────
         with open(file_path, "wb") as buffer:
-            while chunk := await file.read(1024 * 1024):
+            while chunk := await file.read(UPLOAD_CHUNK_SIZE):
                 buffer.write(chunk)
 
         content_type = file.content_type or ""
